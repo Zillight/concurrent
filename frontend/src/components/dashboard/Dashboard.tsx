@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Icon from "@/components/ui/Icon";
 import TopAppBar from "@/components/layout/TopAppBar";
 import BottomNav from "@/components/layout/BottomNav";
@@ -43,9 +44,14 @@ function relativeTime(iso: string) {
 }
 
 export default function Dashboard() {
+  const router = useRouter();
   const [showRequisition, setShowRequisition] = useState(false);
-  const { profile, positions, loading, error: userError, signOut } = useUser();
+  const { profile, positions, permissions, loading, error: userError, signOut } = useUser();
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
+
+  const canApprove = permissions.some((p) => p.startsWith("requisition.approve"));
+  const canAdmin = permissions.includes("users.manage") || permissions.includes("roles.assign");
 
   const departmentPosition = positions.find((p) => p.department_id) ?? positions[0];
   const scopeLabel = departmentPosition?.department_name
@@ -57,12 +63,16 @@ export default function Dashboard() {
     async function loadStats() {
       const { data, error } = await supabase.rpc("get_dashboard_stats");
       if (!cancelled && !error) setStats(data);
+      if (canApprove) {
+        const { data: approvals } = await supabase.rpc("get_my_pending_approvals");
+        if (!cancelled && approvals) setPendingApprovals(approvals.length);
+      }
     }
     loadStats();
     return () => {
       cancelled = true;
     };
-  }, [showRequisition]);
+  }, [showRequisition, canApprove]);
 
   if (showRequisition) {
     return <RequisitionFlow onClose={() => setShowRequisition(false)} />;
@@ -85,6 +95,18 @@ export default function Dashboard() {
             <p className="text-sm text-error mt-2">Could not load your profile: {userError}</p>
           )}
         </section>
+
+        {canApprove && pendingApprovals > 0 && (
+          <button
+            onClick={() => router.push("/approvals")}
+            className="w-full mb-6 flex items-center justify-between px-4 py-3 bg-tertiary-container text-on-tertiary-container rounded-xl active:scale-95 transition-transform"
+          >
+            <span className="text-sm font-semibold">
+              {pendingApprovals} requisition{pendingApprovals === 1 ? "" : "s"} awaiting your approval
+            </span>
+            <Icon name="arrow_forward" />
+          </button>
+        )}
 
         <section className="mb-6 bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden border-t-4 border-primary">
           <div className="p-4">
@@ -154,7 +176,17 @@ export default function Dashboard() {
           New Bulk Requisition
         </button>
       </main>
-      <BottomNav active="home" />
+      <BottomNav
+        active="home"
+        canApprove={canApprove}
+        canAdmin={canAdmin}
+        onNavigate={(key) => {
+          if (key === "approvals") router.push("/approvals");
+          if (key === "board") router.push("/board");
+          if (key === "admin") router.push("/admin");
+          if (key === "add") setShowRequisition(true);
+        }}
+      />
     </div>
   );
 }

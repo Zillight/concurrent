@@ -31,8 +31,10 @@ export interface UserProfile {
 interface UserContextValue {
   profile: UserProfile | null;
   positions: UserPosition[];
+  permissions: string[];
   loading: boolean;
   error: string | null;
+  hasPermission: (code: string) => boolean;
   signOut: () => Promise<void>;
 }
 
@@ -42,6 +44,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [positions, setPositions] = useState<UserPosition[]>([]);
+  const [permissions, setPermissions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,6 +59,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       } else {
         setProfile(data.profile);
         setPositions(data.positions ?? []);
+        setPermissions(data.permissions ?? []);
       }
       setLoading(false);
     }
@@ -72,8 +76,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
     router.refresh();
   }, [router]);
 
+  const hasPermission = useCallback(
+    (code: string) => permissions.includes(code),
+    [permissions]
+  );
+
   return (
-    <UserContext.Provider value={{ profile, positions, loading, error, signOut }}>
+    <UserContext.Provider
+      value={{ profile, positions, permissions, loading, error, hasPermission, signOut }}
+    >
       {children}
     </UserContext.Provider>
   );

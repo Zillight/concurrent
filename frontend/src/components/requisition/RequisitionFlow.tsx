@@ -8,6 +8,7 @@ import ItemFormSheet from "./ItemFormSheet";
 import SubmissionPreview from "./SubmissionPreview";
 import { RequisitionItem } from "./types";
 import { supabase } from "@/lib/supabaseClient";
+import { useUser } from "@/lib/UserContext";
 
 // TODO: Replace with the department's actual budget for the current budget year.
 const DEPARTMENT_BUDGET_LIMIT_NGN = 500000;
@@ -19,12 +20,23 @@ interface RequisitionFlowProps {
 type Step = "items" | "preview" | "success";
 
 export default function RequisitionFlow({ onClose }: RequisitionFlowProps) {
+  const { positions } = useUser();
+  // Department-scoped positions the caller can submit under — a user may
+  // belong to several departments and picks one per requisition.
+  const deptPositions = useMemo(
+    () => positions.filter((p) => p.branch_id && p.department_id),
+    [positions]
+  );
   const [step, setStep] = useState<Step>("items");
   const [items, setItems] = useState<RequisitionItem[]>([]);
   const [showAddItem, setShowAddItem] = useState(false);
   const [isUSD, setIsUSD] = useState(false);
+  const [selectedPositionId, setSelectedPositionId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const selectedPosition =
+    deptPositions.find((p) => p.position_id === selectedPositionId) ?? deptPositions[0];
 
   const currency = isUSD ? "$" : "₦";
 
@@ -43,19 +55,20 @@ export default function RequisitionFlow({ onClose }: RequisitionFlowProps) {
     setError(null);
 
     try {
-      // TODO: Get these from the authenticated user's session/profile.
-      const requested_by = "f8b8b8b8-f8b8-f8b8-f8b8-f8b8b8b8b8b8";
-      const branch_id = "a7b7b7b7-a7b7-a7b7-a7b7-a7b7b7b7b7b7";
-      const department_id = "c6c6c6c6-c6c6-c6c6-c6c6-c6c6c6c6c6c6";
+      // Branch + department come from the position the caller selected —
+      // the DB re-validates they actually hold it and derives
+      // requested_by from auth.uid().
+      if (!selectedPosition?.branch_id || !selectedPosition.department_id) {
+        throw new Error("No department position assigned to your account");
+      }
 
       const { data: requisition, error: requisitionError } = await supabase.rpc(
         "create_requisition",
         {
           title: "New Bulk Requisition",
           description: `Bulk requisition with ${items.length} item(s) submitted from the PWA`,
-          requested_by,
-          branch_id,
-          department_id,
+          branch_id: selectedPosition.branch_id,
+          department_id: selectedPosition.department_id,
           currency: isUSD ? "USD" : "NGN",
         }
       );
@@ -79,7 +92,11 @@ export default function RequisitionFlow({ onClose }: RequisitionFlowProps) {
       setStep("success");
     } catch (err) {
       console.error("Failed to submit requisition:", err);
-      setError("Something went wrong submitting the requisition. Please try again.");
+      setError(
+        err instanceof Error && err.message
+          ? err.message
+          : "Something went wrong submitting the requisition. Please try again."
+      );
     } finally {
       setSubmitting(false);
     }
@@ -134,6 +151,35 @@ export default function RequisitionFlow({ onClose }: RequisitionFlowProps) {
 
         {step === "items" && (
           <>
+            <div className="mb-4">
+              <label
+                htmlFor="department"
+                className="block text-xs font-semibold text-on-surface-variant mb-1 uppercase tracking-wider"
+              >
+                Submitting for
+              </label>
+              {deptPositions.length > 1 ? (
+                <select
+                  id="department"
+                  value={selectedPosition?.position_id ?? ""}
+                  onChange={(e) => setSelectedPositionId(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-surface-container-low border border-outline-variant text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  {deptPositions.map((p) => (
+                    <option key={p.position_id} value={p.position_id}>
+                      {p.department_name} · {p.branch_name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-sm font-semibold text-on-surface px-1 py-2">
+                  {selectedPosition
+                    ? `${selectedPosition.department_name} · ${selectedPosition.branch_name}`
+                    : "No department assigned to your account"}
+                </p>
+              )}
+            </div>
+
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-on-surface-variant uppercase">
                 Itemized Cost Breakdown

@@ -1,5 +1,10 @@
 import Dashboard from "@/components/dashboard/Dashboard";
+import { UserProvider } from "@/lib/UserContext";
 
 export default function Home() {
-  return <Dashboard />;
+  return (
+    <UserProvider>
+      <Dashboard />
+    </UserProvider>
+  );
 }

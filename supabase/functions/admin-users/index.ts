@@ -14,6 +14,9 @@
 //              (added when the admin UI lands).
 //            { "action": "reset_password", "user_id", "password" }
 //            { "action": "deactivate",     "user_id" }
+//            { "action": "reactivate",     "user_id" }
+//            { "action": "update_user",    "user_id", "full_name"?, "email"? }
+//            { "action": "delete_user",    "user_id" }
 //            { "action": "assign_position",   "user_id", "role_code",
 //              "branch_id"?, "department_id"? }
 //            { "action": "unassign_position", "user_id", "position_id" }
@@ -260,6 +263,58 @@ Deno.serve(async (req) => {
       const { error } = await admin.auth.admin.updateUserById(user_id, {
         ban_duration: "876000h", // ~100 years = effectively permanent
       });
+      if (error) return json({ error: error.message }, 400);
+      await admin.from("profiles").update({ is_active: false }).eq("id", user_id);
+      return json({ ok: true });
+    }
+
+    case "reactivate": {
+      const { user_id } = body;
+      if (!user_id) return json({ error: "user_id is required" }, 400);
+      const { error } = await admin.auth.admin.updateUserById(user_id, {
+        ban_duration: "none",
+      });
+      if (error) return json({ error: error.message }, 400);
+      await admin.from("profiles").update({ is_active: true }).eq("id", user_id);
+      return json({ ok: true });
+    }
+
+    case "update_user": {
+      // Edit name/email. Email change goes through auth so login moves with it;
+      // the profiles row mirrors whatever auth accepts.
+      const { user_id, full_name, email } = body;
+      if (!user_id) return json({ error: "user_id is required" }, 400);
+      if (!full_name && !email) {
+        return json({ error: "nothing to update" }, 400);
+      }
+
+      if (email) {
+        const { error } = await admin.auth.admin.updateUserById(user_id, {
+          email,
+          email_confirm: true, // admin-set emails skip verification
+        });
+        if (error) return json({ error: error.message }, 400);
+      }
+
+      const updates: Record<string, string> = {};
+      if (full_name) updates.full_name = full_name;
+      if (email) updates.email = email;
+      const { error } = await admin
+        .from("profiles")
+        .update(updates)
+        .eq("id", user_id);
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true });
+    }
+
+    case "delete_user": {
+      // Hard delete — profiles cascade, history rows keep their audit text.
+      const { user_id } = body;
+      if (!user_id) return json({ error: "user_id is required" }, 400);
+      if (user_id === caller.id) {
+        return json({ error: "Cannot delete your own account" }, 400);
+      }
+      const { error } = await admin.auth.admin.deleteUser(user_id);
       if (error) return json({ error: error.message }, 400);
       return json({ ok: true });
     }

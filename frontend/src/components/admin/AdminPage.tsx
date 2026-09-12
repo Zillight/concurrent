@@ -46,8 +46,8 @@ const labelCls =
 
 // Checkbox multi-select for scopes. What shows depends on the role's scope:
 //   branch      -> branch checkboxes
-//   department  -> department checkboxes (grouped under their branch)
-//   group       -> departments (each becomes coverage for a per-branch seat)
+//   department  -> pick branch(es) first, then departments inside them
+//   group       -> same, but departments become coverage for a per-branch seat
 //   organization-> nothing
 function ScopeSelector({
   role,
@@ -62,6 +62,9 @@ function ScopeSelector({
   value: Scope[];
   onChange: (scopes: Scope[]) => void;
 }) {
+  // Which branches are open for department selection (dept/group roles only).
+  const [openBranches, setOpenBranches] = useState<string[]>([]);
+
   if (!role || role.scope === "organization") return null;
 
   const needsBranch = role.scope === "branch";
@@ -76,6 +79,15 @@ function ScopeSelector({
     );
   };
 
+  const toggleBranchOpen = (id: string) => {
+    if (openBranches.includes(id)) {
+      setOpenBranches(openBranches.filter((b) => b !== id));
+      onChange(value.filter((s) => s.branch_id !== id));
+    } else {
+      setOpenBranches([...openBranches, id]);
+    }
+  };
+
   const toggleDept = (d: Department) => {
     const has = value.some((s) => s.department_id === d.id);
     onChange(
@@ -87,6 +99,7 @@ function ScopeSelector({
 
   const branchChecked = (id: string) => value.some((s) => s.branch_id === id && !s.department_id);
   const deptChecked = (id: string) => value.some((s) => s.department_id === id);
+  const deptCount = (branchId: string) => value.filter((s) => s.branch_id === branchId).length;
 
   return (
     <div className="space-y-3">
@@ -112,28 +125,48 @@ function ScopeSelector({
       {needsDept && (
         <div>
           <label className={labelCls}>
-            Departments{role.scope === "group" ? " (coverage)" : ""}
+            Branches{role.scope === "group" ? " → department coverage" : " → departments"}
           </label>
-          <div className="rounded-xl border border-outline-variant divide-y divide-outline-variant max-h-56 overflow-y-auto">
+          <div className="rounded-xl border border-outline-variant divide-y divide-outline-variant">
             {branches.map((b) => {
               const depts = departments.filter((d) => d.branch_id === b.id);
-              if (!depts.length) return null;
+              const open = openBranches.includes(b.id);
               return (
                 <div key={b.id}>
-                  <p className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant bg-surface-container-low">
-                    {b.name}
-                  </p>
-                  {depts.map((d) => (
-                    <label key={d.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={deptChecked(d.id)}
-                        onChange={() => toggleDept(d)}
-                        className="w-4 h-4 accent-primary"
-                      />
-                      <span className="text-sm text-on-surface">{d.name}</span>
-                    </label>
-                  ))}
+                  <label className="flex items-center gap-3 px-4 py-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={open}
+                      onChange={() => toggleBranchOpen(b.id)}
+                      className="w-4 h-4 accent-primary"
+                    />
+                    <span className="text-sm text-on-surface flex-1">{b.name}</span>
+                    {deptCount(b.id) > 0 && (
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-primary-container text-on-primary-container">
+                        {deptCount(b.id)} dept{deptCount(b.id) === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </label>
+                  {open && (
+                    <div className="border-t border-outline-variant bg-surface-container-low">
+                      {depts.length === 0 && (
+                        <p className="px-8 py-2 text-xs text-on-surface-variant italic">
+                          No departments yet
+                        </p>
+                      )}
+                      {depts.map((d) => (
+                        <label key={d.id} className="flex items-center gap-3 pl-8 pr-4 py-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={deptChecked(d.id)}
+                            onChange={() => toggleDept(d)}
+                            className="w-4 h-4 accent-primary"
+                          />
+                          <span className="text-sm text-on-surface">{d.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -170,17 +203,20 @@ export default function AdminPage() {
 
   // Org management
   const [branchName, setBranchName] = useState("");
-  const [branchCode, setBranchCode] = useState("");
   const [branchDepts, setBranchDepts] = useState("");
   const [deptName, setDeptName] = useState("");
   const [deptBranchId, setDeptBranchId] = useState("");
   const [orgBusy, setOrgBusy] = useState(false);
+  const [editing, setEditing] = useState<{ type: "branch" | "department"; id: string } | null>(null);
+  const [editName, setEditName] = useState("");
 
   // Per-user expanded actions
   const [expandedUser, setExpandedUser] = useState<string | null>(null);
   const [assignRoleId, setAssignRoleId] = useState("");
   const [assignScopes, setAssignScopes] = useState<Scope[]>([]);
   const [resetPassword, setResetPassword] = useState("");
+  const [editFullName, setEditFullName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
   const [busy, setBusy] = useState(false);
 
   const selectedRole = useMemo(() => roles.find((r) => r.id === roleId), [roles, roleId]);
@@ -191,18 +227,27 @@ export default function AdminPage() {
   );
 
   const loadAll = useCallback(async () => {
-    const [u, r, b, d] = await Promise.all([
+    const [u, r, b, d, m] = await Promise.all([
       supabase
         .from("profiles")
         .select(
-          "id, full_name, email, is_active, position_assignments(end_date, positions(id, title, roles(code, name), branches(name), departments(name))), department_members(department_id)"
+          "id, full_name, email, is_active, position_assignments!profile_id(end_date, positions(id, title, roles(code, name), branches(name), departments!department_id(name)))"
         )
         .order("created_at"),
       supabase.from("roles").select("id, code, name, scope").order("level"),
       supabase.from("branches").select("id, name").order("name"),
       supabase.from("departments").select("id, name, branch_id").order("name"),
+      supabase.from("department_members").select("profile_id, department_id"),
     ]);
-    setUsers((u.data as unknown as UserRow[]) ?? []);
+    if (u.error) setError(`Could not load users: ${u.error.message}`);
+    const members = m.data ?? [];
+    const rows = ((u.data ?? []) as unknown as Omit<UserRow, "department_members">[]).map((row) => ({
+      ...row,
+      department_members: members
+        .filter((x) => x.profile_id === row.id)
+        .map((x) => ({ department_id: x.department_id })),
+    }));
+    setUsers(rows);
     setRoles(r.data ?? []);
     setBranches(b.data ?? []);
     setDepartments(d.data ?? []);
@@ -211,32 +256,25 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (allowed) {
-      Promise.all([
-        supabase
-          .from("profiles")
-          .select(
-            "id, full_name, email, is_active, position_assignments(end_date, positions(id, title, roles(code, name), branches(name), departments(name))), department_members(department_id)"
-          )
-          .order("created_at"),
-        supabase.from("roles").select("id, code, name, scope").order("level"),
-        supabase.from("branches").select("id, name").order("name"),
-        supabase.from("departments").select("id, name, branch_id").order("name"),
-      ]).then(([u, r, b, d]) => {
-        setUsers((u.data as unknown as UserRow[]) ?? []);
-        setRoles(r.data ?? []);
-        setBranches(b.data ?? []);
-        setDepartments(d.data ?? []);
-        setLoading(false);
-      });
+      loadAll();
     } else if (!userLoading) {
       Promise.resolve().then(() => setLoading(false));
     }
-  }, [allowed, userLoading]);
+  }, [allowed, userLoading, loadAll]);
 
   const invoke = async (body: Record<string, unknown>) => {
     const { data, error: fnError } = await supabase.functions.invoke("admin-users", { body });
     if (fnError) {
-      const msg = data?.error ?? fnError.message;
+      // supabase-js puts the non-2xx Response on error.context — read its JSON
+      // body so the function's own error message reaches the banner.
+      let msg = fnError.message;
+      try {
+        const ctx = (fnError as { context?: Response }).context;
+        if (ctx) {
+          const j = (await ctx.clone().json()) as { error?: string };
+          if (j.error) msg = j.error;
+        }
+      } catch { /* keep generic message */ }
       throw new Error(msg);
     }
     return data;
@@ -284,12 +322,11 @@ export default function AdminPage() {
         .map((name) => ({ name }));
       const { error: rpcError } = await supabase.rpc("create_branch", {
         name: branchName.trim(),
-        code: branchCode.trim().toUpperCase(),
         departments: depts,
       });
       if (rpcError) throw rpcError;
       setNotice(`Branch "${branchName.trim()}" created${depts.length ? ` with ${depts.length} department(s)` : ""}.`);
-      setBranchName(""); setBranchCode(""); setBranchDepts("");
+      setBranchName(""); setBranchDepts("");
       loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create branch");
@@ -316,6 +353,33 @@ export default function AdminPage() {
     } finally {
       setOrgBusy(false);
     }
+  };
+
+  const handleRename = async () => {
+    if (!editing || !editName.trim()) return;
+    setOrgBusy(true);
+    setError(null);
+    try {
+      const table = editing.type === "branch" ? "branches" : "departments";
+      const { error: updateError } = await supabase
+        .from(table)
+        .update({ name: editName.trim() })
+        .eq("id", editing.id);
+      if (updateError) throw updateError;
+      setNotice("Renamed.");
+      setEditing(null);
+      setEditName("");
+      loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Rename failed");
+    } finally {
+      setOrgBusy(false);
+    }
+  };
+
+  const startEdit = (type: "branch" | "department", id: string, current: string) => {
+    setEditing({ type, id });
+    setEditName(current);
   };
 
   const handleAssign = async (userId: string) => {
@@ -372,16 +436,51 @@ export default function AdminPage() {
     }
   };
 
-  const handleDeactivate = async (userId: string) => {
-    if (!confirm("Deactivate this account? They will no longer be able to sign in.")) return;
+  const handleUpdateUser = async (userId: string) => {
     setBusy(true);
     setError(null);
     try {
-      await invoke({ action: "deactivate", user_id: userId });
-      setNotice("Account deactivated.");
+      await invoke({
+        action: "update_user",
+        user_id: userId,
+        full_name: editFullName.trim(),
+        email: editEmail.trim(),
+      });
+      setNotice("User updated.");
       loadAll();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Deactivate failed");
+      setError(err instanceof Error ? err.message : "Update failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeactivate = async (userId: string, reactivate = false) => {
+    if (!reactivate && !confirm("Deactivate this account? They will no longer be able to sign in.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke({ action: reactivate ? "reactivate" : "deactivate", user_id: userId });
+      setNotice(reactivate ? "Account reactivated." : "Account deactivated.");
+      loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string, name: string) => {
+    if (!confirm(`Permanently delete ${name}? This cannot be undone — their account and profile are removed.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke({ action: "delete_user", user_id: userId });
+      setNotice("Account deleted.");
+      setExpandedUser(null);
+      loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
     } finally {
       setBusy(false);
     }
@@ -440,12 +539,8 @@ export default function AdminPage() {
             </h3>
             <form onSubmit={handleCreateBranch} className="space-y-3 mb-4">
               <p className="text-sm font-semibold text-on-surface">New branch</p>
-              <div className="flex gap-2">
-                <input required placeholder="Branch name (e.g. Ikeja)" value={branchName}
-                  onChange={(e) => setBranchName(e.target.value)} className={inputCls} />
-                <input required placeholder="Code" value={branchCode} maxLength={6}
-                  onChange={(e) => setBranchCode(e.target.value)} className={`${inputCls} w-24`} />
-              </div>
+              <input required placeholder="Branch name (e.g. Ikeja)" value={branchName}
+                onChange={(e) => setBranchName(e.target.value)} className={inputCls} />
               <input
                 placeholder="Departments, comma-separated (e.g. Media, Ushering, Welfare)"
                 value={branchDepts}
@@ -475,6 +570,65 @@ export default function AdminPage() {
                 Add Department
               </button>
             </form>
+
+            <div className="pt-4 mt-4 border-t border-outline-variant">
+              <p className="text-sm font-semibold text-on-surface mb-2">Existing structure</p>
+              <div className="rounded-xl border border-outline-variant divide-y divide-outline-variant">
+                {branches.length === 0 && (
+                  <p className="px-4 py-3 text-xs text-on-surface-variant italic">No branches yet</p>
+                )}
+                {branches.map((b) => (
+                  <div key={b.id}>
+                    <div className="flex items-center gap-2 px-4 py-2.5">
+                      {editing?.type === "branch" && editing.id === b.id ? (
+                        <>
+                          <input autoFocus value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && handleRename()}
+                            className={`${inputCls} py-1.5 text-sm`} />
+                          <button onClick={handleRename} disabled={orgBusy}
+                            className="text-xs font-semibold text-primary shrink-0">Save</button>
+                          <button onClick={() => setEditing(null)}
+                            className="text-xs text-on-surface-variant shrink-0">Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-sm font-semibold text-on-surface flex-1">{b.name}</span>
+                          <button onClick={() => startEdit("branch", b.id, b.name)}
+                            className="text-on-surface-variant active:text-primary">
+                            <Icon name="edit" className="text-base" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {departments.filter((d) => d.branch_id === b.id).map((d) => (
+                      <div key={d.id} className="flex items-center gap-2 pl-8 pr-4 py-2 border-t border-outline-variant/50">
+                        {editing?.type === "department" && editing.id === d.id ? (
+                          <>
+                            <input autoFocus value={editName}
+                              onChange={(e) => setEditName(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && handleRename()}
+                              className={`${inputCls} py-1.5 text-sm`} />
+                            <button onClick={handleRename} disabled={orgBusy}
+                              className="text-xs font-semibold text-primary shrink-0">Save</button>
+                            <button onClick={() => setEditing(null)}
+                              className="text-xs text-on-surface-variant shrink-0">Cancel</button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-sm text-on-surface-variant flex-1">{d.name}</span>
+                            <button onClick={() => startEdit("department", d.id, d.name)}
+                              className="text-on-surface-variant active:text-primary">
+                              <Icon name="edit" className="text-base" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
           </section>
         )}
 
@@ -529,7 +683,17 @@ export default function AdminPage() {
               const expanded = expandedUser === u.id;
               return (
                 <div key={u.id} className="bg-surface-container-lowest rounded-xl shadow-sm p-4">
-                  <button onClick={() => setExpandedUser(expanded ? null : u.id)}
+                  <button
+                    onClick={() => {
+                      setExpandedUser(expanded ? null : u.id);
+                      if (!expanded) {
+                        setEditFullName(u.full_name);
+                        setEditEmail(u.email);
+                        setAssignRoleId("");
+                        setAssignScopes([]);
+                        setResetPassword("");
+                      }
+                    }}
                     className="w-full flex justify-between items-start text-left">
                     <div>
                       <p className="text-sm font-semibold text-on-surface">
@@ -561,6 +725,25 @@ export default function AdminPage() {
 
                   {expanded && (
                     <div className="mt-4 pt-4 border-t border-outline-variant space-y-4">
+                      {canManageUsers && (
+                        <div>
+                          <label className={labelCls}>Edit details</label>
+                          <div className="space-y-2">
+                            <input placeholder="Full name" value={editFullName}
+                              onChange={(e) => setEditFullName(e.target.value)} className={inputCls} />
+                            <div className="flex gap-2">
+                              <input type="email" placeholder="Email" value={editEmail}
+                                onChange={(e) => setEditEmail(e.target.value)} className={inputCls} />
+                              <button disabled={busy || !editFullName.trim() || !editEmail.trim()}
+                                onClick={() => handleUpdateUser(u.id)}
+                                className="px-4 bg-surface-container-high text-on-surface text-sm font-semibold rounded-lg disabled:opacity-60 shrink-0">
+                                Save
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {canAssign && (
                         <div>
                           <label className={labelCls}>Assign position / membership</label>
@@ -619,9 +802,20 @@ export default function AdminPage() {
                               </button>
                             </div>
                           </div>
-                          <button disabled={busy} onClick={() => handleDeactivate(u.id)}
+                          {u.is_active ? (
+                            <button disabled={busy} onClick={() => handleDeactivate(u.id)}
+                              className="w-full py-2 bg-surface-container-high text-on-surface text-sm font-semibold rounded-lg disabled:opacity-60">
+                              Deactivate account
+                            </button>
+                          ) : (
+                            <button disabled={busy} onClick={() => handleDeactivate(u.id, true)}
+                              className="w-full py-2 bg-secondary-container text-on-secondary-container text-sm font-semibold rounded-lg disabled:opacity-60">
+                              Reactivate account
+                            </button>
+                          )}
+                          <button disabled={busy} onClick={() => handleDeleteUser(u.id, u.full_name)}
                             className="w-full py-2 bg-error-container text-on-error-container text-sm font-semibold rounded-lg disabled:opacity-60">
-                            Deactivate account
+                            Delete account permanently
                           </button>
                         </>
                       )}

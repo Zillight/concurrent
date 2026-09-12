@@ -1,0 +1,14 @@
+# OS
+.DS_Store
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# dependencies (root-level safety net)
+node_modules/
+
+# supabase local
+supabase/.branches/
+supabase/.temp/
